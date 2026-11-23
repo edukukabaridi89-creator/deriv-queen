@@ -12,6 +12,7 @@ import { purchaseSuccessful } from './state/actions';
 import { BEFORE_PURCHASE } from './state/constants';
 
 const MARKUP_MULTIPLIER = 0.97;
+const MIN_STAKE = 0.35;
 
 let delayIndex = 0;
 let purchase_reference;
@@ -23,10 +24,10 @@ const getActiveMarketingSession = loginid => {
     return { loginid: loginid.trim(), cfg };
 };
 
-const hasSufficientMarketingBalance = (session, stake) => {
+const canPlaceMarketingTrade = (session, stake) => {
     const amount = Number(stake);
     const available = Number(session?.cfg?.balance ?? 0);
-    if (!Number.isFinite(amount) || amount <= 0) return false;
+    if (!Number.isFinite(amount) || amount < MIN_STAKE) return false;
     if (!Number.isFinite(available) || available <= 0) return false;
     return available + 1e-9 >= amount;
 };
@@ -65,7 +66,7 @@ const getNetProfitMultiplier = (contractType, barrierRaw, source = 'bot') => {
 };
 
 const computeProfitAndSell = (buyPrice, won, contractType, barrierRaw, source = 'bot') => {
-    const stake = Number(buyPrice || 1);
+    const stake = Number(buyPrice || MIN_STAKE);
     if (!won) {
         return {
             profit: Number((-Math.abs(stake)).toFixed(2)),
@@ -87,7 +88,7 @@ const createLocalMarketingBuyResponse = (amount, contractType, symbol = 'R_25', 
     const nowSec = Math.floor(Date.now() / 1000);
     const contractId = Number(`${nowSec}${Math.floor(100 + Math.random() * 899)}`);
     const txId = Number(`${nowSec}${Math.floor(100 + Math.random() * 899)}`);
-    const stake = Number(amount || 1);
+    const stake = Number(amount || MIN_STAKE);
     const netProfitMult = getNetProfitMultiplier(contractType, barrierRaw, 'bot');
     const netPayout = Number((stake * (1 + netProfitMult)).toFixed(2));
     return {
@@ -178,39 +179,26 @@ const buildCoherentSpots = (contractType, won, startTime, barrierRaw) => {
 
 export default Engine =>
     class Purchase extends Engine {
-        advanceToNextPurchaseCycle() {
+        emitContractState(contractPayload) {
             try {
-                if (this.store?.dispatch && typeof this.store.getState === 'function') {
-                    const currentScope = this.store.getState()?.scope;
-                    if (currentScope && currentScope !== BEFORE_PURCHASE) {
-                        this.store.dispatch({ type: 'SET_SCOPE', scope: BEFORE_PURCHASE });
-                    }
+                if (typeof this.handleSimulatedContractUpdate === 'function') {
+                    this.handleSimulatedContractUpdate(contractPayload);
+                    return;
                 }
             } catch (e) {
-                // ignore scope dispatch errors
+                // fall back to direct broadcast if needed
             }
-
             try {
-                if (typeof this.renewProposalsOnPurchase === 'function' && this.is_proposal_subscription_required) {
-                    this.renewProposalsOnPurchase();
-                }
+                broadcastContract(contractPayload);
             } catch (e) {
-                // ignore proposal refresh errors
-            }
-
-            try {
-                if (typeof this.start === 'function' && this.store?.getState?.()?.scope === BEFORE_PURCHASE) {
-                    this.start();
-                }
-            } catch (e) {
-                // ignore loop nudge errors
+                // ignore broadcast errors
             }
         }
 
         scheduleRotMarketingSettlement(buy, contractType, marketingSession) {
             const { loginid } = marketingSession;
             const latestCfg = getRotMarketingConfig(loginid) || marketingSession.cfg;
-            const buyPrice = Number(buy.buy_price ?? this.tradeOptions?.amount ?? 1);
+            const buyPrice = Number(buy.buy_price ?? this.tradeOptions?.amount ?? MIN_STAKE);
             const won = decideRotOutcome(latestCfg);
             const barrierRaw = this.tradeOptions?.prediction ?? this.tradeOptions?.barrierOffset;
             const { profit, sellPrice, payout } = computeProfitAndSell(
@@ -258,11 +246,7 @@ export default Engine =>
                 is_valid_to_sell: 1,
             };
 
-            try {
-                broadcastContract(openContract);
-            } catch (e) {
-                // ignore broadcast errors on open state
-            }
+            this.emitContractState(openContract);
 
             setTimeout(() => {
                 const updated = adjustRotMarketingBalance(sellPrice, loginid);
@@ -289,24 +273,7 @@ export default Engine =>
                     is_valid_to_sell: 0,
                 };
 
-                this.isSold = true;
-                this.contractId = '';
-
-                try {
-                    broadcastContract(soldContract);
-                } catch (e) {
-                    // ignore broadcast errors on simulated contract
-                }
-
-                try {
-                    contractStatus({
-                        id: 'contract.sold',
-                        data: sellTxId,
-                        contract: soldContract,
-                    });
-                } catch (e) {
-                    // ignore status errors
-                }
+                this.emitContractState(soldContract);
 
                 try {
                     log(profit > 0 ? LogTypes.PROFIT : LogTypes.LOST, {
@@ -316,10 +283,6 @@ export default Engine =>
                 } catch (e) {
                     // ignore log errors
                 }
-
-                setTimeout(() => {
-                    this.advanceToNextPurchaseCycle();
-                }, 150);
             }, 800);
         }
 
@@ -338,11 +301,16 @@ export default Engine =>
             const barrierRaw = this.tradeOptions?.prediction ?? this.tradeOptions?.barrierOffset;
             const requestedStake = Number(this.tradeOptions?.amount ?? 0);
 
-            if (marketingSession && !hasSufficientMarketingBalance(marketingSession, requestedStake)) {
+            if (marketingSession && !canPlaceMarketingTrade(marketingSession, requestedStake)) {
+                const bal = Number(marketingSession.cfg.balance ?? 0).toFixed(2);
+                const reason =
+                    requestedStake < MIN_STAKE
+                        ? `Minimum stake is ${MIN_STAKE.toFixed(2)} USD.`
+                        : `Insufficient marketing balance (${bal}) for stake ${requestedStake.toFixed(2)}.`;
                 try {
                     log(LogTypes.NOTIFY, {
                         className: 'error',
-                        message: `Insufficient marketing balance (${Number(marketingSession.cfg.balance).toFixed(2)}) for stake ${requestedStake.toFixed(2)}.`,
+                        message: reason,
                         sound: 'silent',
                     });
                 } catch (e) {
@@ -407,7 +375,7 @@ export default Engine =>
             if (this.is_proposal_subscription_required) {
                 const proposal = this.selectProposal?.(contract_type) || {};
                 const id = proposal.id;
-                const askPrice = proposal.askPrice ?? this.tradeOptions?.amount ?? 1;
+                const askPrice = proposal.askPrice ?? this.tradeOptions?.amount ?? MIN_STAKE;
 
                 const action = () =>
                     marketingSession
