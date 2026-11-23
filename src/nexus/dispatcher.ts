@@ -47,6 +47,7 @@ type BatchItem = {
 };
 
 const MARKUP_MULTIPLIER = 0.97;
+const MIN_STAKE = 0.35;
 
 const open = new Map<number, (r: TradeResult) => void>();
 const simulatedContracts = new Map<number, SimulatedContractState>();
@@ -81,11 +82,7 @@ const syncMarketingClientBalance = (nextBalance: number | null, loginid: string)
     }
 };
 
-const getMinStakeForContract = (contractType?: string): number => {
-    const t = String(contractType || '').toUpperCase();
-    if (t === 'CALL' || t === 'PUT') return 0.35;
-    return 1;
-};
+const getMinStakeForContract = (_contractType?: string): number => MIN_STAKE;
 
 const extractBarrier = (req: TradeReq): number | undefined => {
     const raw = (req as any).barrier ?? (req as any).prediction;
@@ -134,7 +131,7 @@ const computeProfitAndSell = (
     barrierRaw?: unknown,
     source?: string
 ) => {
-    const stake = Number(buyPrice || 1);
+    const stake = Number(buyPrice || MIN_STAKE);
     if (!won) {
         return {
             profit: Number((-Math.abs(stake)).toFixed(2)),
@@ -156,7 +153,7 @@ const createLocalMarketingBuyResponse = (req: TradeReq, stake: number) => {
     const nowSec = Math.floor(Date.now() / 1000);
     const contractId = Number(`${nowSec}${Math.floor(100 + Math.random() * 899)}`);
     const txId = Number(`${nowSec}${Math.floor(100 + Math.random() * 899)}`);
-    const safeStake = Number(stake || 1);
+    const safeStake = Number(stake || MIN_STAKE);
     const netProfitMult = getNetProfitMultiplier(req.contract_type, extractBarrier(req), req.source);
     const netPayout = Number((safeStake * (1 + netProfitMult)).toFixed(2));
     return {
