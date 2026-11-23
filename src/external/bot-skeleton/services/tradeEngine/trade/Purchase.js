@@ -8,6 +8,7 @@ import {
 import { api_base } from '../../api/api-base';
 import { contract as broadcastContract, contractStatus, info, log } from '../utils/broadcast';
 import { doUntilDone, getUUID, recoverFromError, tradeOptionToBuy } from '../utils/helpers';
+import { observer } from '../utils/observer';
 import { purchaseSuccessful } from './state/actions';
 import { BEFORE_PURCHASE } from './state/constants';
 
@@ -302,16 +303,15 @@ export default Engine =>
             const requestedStake = Number(this.tradeOptions?.amount ?? 0);
 
             if (marketingSession && !canPlaceMarketingTrade(marketingSession, requestedStake)) {
-                const bal = Number(marketingSession.cfg.balance ?? 0).toFixed(2);
                 const reason =
                     requestedStake < MIN_STAKE
                         ? `Minimum stake is ${MIN_STAKE.toFixed(2)} USD.`
-                        : `Insufficient marketing balance (${bal}) for stake ${requestedStake.toFixed(2)}.`;
+                        : 'Insufficient balance to purchase this contract.';
                 try {
-                    log(LogTypes.NOTIFY, {
+                    observer.emit('ui.log.notify', {
                         className: 'error',
                         message: reason,
-                        sound: 'silent',
+                        sound: 'error',
                     });
                 } catch (e) {
                     // ignore notify error
