@@ -7,7 +7,12 @@ import { api_base } from '@/external/bot-skeleton/services/api/api-base';
 import { useApiBase } from '@/hooks/useApiBase';
 import { useStore } from '@/hooks/useStore';
 import { AccountBadge } from './account-badge';
-import { isDemoAccount } from '@/utils/account-helpers';
+import {
+    getRotMarketingConfig,
+    isDemoAccount,
+    isMarketingLoginId,
+    ROT_MARKETING_EVENT_NAME,
+} from '@/utils/account-helpers';
 import { Localize } from '@deriv-com/translations';
 import { TAccountSwitcher } from './common/types';
 import AccountInfoWrapper from './account-info-wrapper';
@@ -15,12 +20,23 @@ import './account-switcher.scss';
 
 const AccountSwitcher = observer(({ activeAccount }: TAccountSwitcher) => {
     const [isOpen, setIsOpen] = useState(false);
+    const [, setMarketingTick] = useState(0);
     const wrapperRef = useRef<HTMLDivElement>(null);
     const { accountList, activeLoginid } = useApiBase();
     const { client, run_panel } = useStore() ?? {};
 
     const is_bot_running = run_panel?.is_running || api_base.is_running;
     const isSingleAccount = !accountList || accountList.length <= 1;
+
+    useEffect(() => {
+        const handleMarketingUpdate = () => {
+            setMarketingTick(prev => prev + 1);
+        };
+        window.addEventListener(ROT_MARKETING_EVENT_NAME, handleMarketingUpdate);
+        return () => {
+            window.removeEventListener(ROT_MARKETING_EVENT_NAME, handleMarketingUpdate);
+        };
+    }, []);
 
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
@@ -56,19 +72,29 @@ const AccountSwitcher = observer(({ activeAccount }: TAccountSwitcher) => {
     const formattedAccounts = useMemo(() => {
         if (!accountList) return [];
         return accountList
-            .map(account => ({
-                loginid: account.loginid,
-                currency: account.currency,
-                balance: addComma(Number(account.balance ?? 0).toFixed(getDecimalPlaces(account.currency))),
-                isVirtual: isDemoAccount(account.loginid),
-                isActive: account.loginid === activeLoginid,
-            }))
+            .map(account => {
+                const marketingCfg = isMarketingLoginId(account.loginid)
+                    ? getRotMarketingConfig(account.loginid)
+                    : null;
+                const rawBalance = marketingCfg ? marketingCfg.balance : Number(account.balance ?? 0);
+                return {
+                    loginid: account.loginid,
+                    currency: account.currency,
+                    balance: addComma(Number(rawBalance).toFixed(getDecimalPlaces(account.currency))),
+                    isVirtual: isDemoAccount(account.loginid),
+                    isActive: account.loginid === activeLoginid,
+                };
+            })
             .sort((a, b) => (a.isActive ? -1 : b.isActive ? 1 : 0));
     }, [accountList, activeLoginid]);
 
     if (!activeAccount) return null;
 
     const { currency, isVirtual, balance } = activeAccount;
+    const activeMarketingCfg = isMarketingLoginId(activeLoginid) ? getRotMarketingConfig(activeLoginid) : null;
+    const displayBalance = activeMarketingCfg
+        ? addComma(Number(activeMarketingCfg.balance).toFixed(getDecimalPlaces(currency)))
+        : balance;
     const showChevron = !isSingleAccount && !is_bot_running;
 
     return (
@@ -125,7 +151,7 @@ const AccountSwitcher = observer(({ activeAccount }: TAccountSwitcher) => {
                                 </span>
                             )}
                         </div>
-                        {(typeof balance !== 'undefined' || !currency) && (
+                        {(typeof displayBalance !== 'undefined' || !currency) && (
                             <div className='acc-info__balance-section'>
                                 <p
                                     data-testid='dt_balance'
@@ -136,7 +162,7 @@ const AccountSwitcher = observer(({ activeAccount }: TAccountSwitcher) => {
                                     {!currency ? (
                                         <Localize i18n_default_text='No currency assigned' />
                                     ) : (
-                                        `${balance} ${getCurrencyDisplayCode(currency)}`
+                                        `${displayBalance} ${getCurrencyDisplayCode(currency)}`
                                     )}
                                 </p>
                             </div>
