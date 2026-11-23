@@ -23,6 +23,14 @@ const getActiveMarketingSession = loginid => {
     return { loginid: loginid.trim(), cfg };
 };
 
+const hasSufficientMarketingBalance = (session, stake) => {
+    const amount = Number(stake);
+    const available = Number(session?.cfg?.balance ?? 0);
+    if (!Number.isFinite(amount) || amount <= 0) return false;
+    if (!Number.isFinite(available) || available <= 0) return false;
+    return available + 1e-9 >= amount;
+};
+
 const getNetProfitMultiplier = (contractType, barrierRaw, source = 'bot') => {
     const t = String(contractType || '').toUpperCase();
     const barrierNum = Number(barrierRaw);
@@ -170,10 +178,40 @@ const buildCoherentSpots = (contractType, won, startTime, barrierRaw) => {
 
 export default Engine =>
     class Purchase extends Engine {
+        advanceToNextPurchaseCycle() {
+            try {
+                if (this.store?.dispatch && typeof this.store.getState === 'function') {
+                    const currentScope = this.store.getState()?.scope;
+                    if (currentScope && currentScope !== BEFORE_PURCHASE) {
+                        this.store.dispatch({ type: 'SET_SCOPE', scope: BEFORE_PURCHASE });
+                    }
+                }
+            } catch (e) {
+                // ignore scope dispatch errors
+            }
+
+            try {
+                if (typeof this.renewProposalsOnPurchase === 'function' && this.is_proposal_subscription_required) {
+                    this.renewProposalsOnPurchase();
+                }
+            } catch (e) {
+                // ignore proposal refresh errors
+            }
+
+            try {
+                if (typeof this.start === 'function' && this.store?.getState?.()?.scope === BEFORE_PURCHASE) {
+                    this.start();
+                }
+            } catch (e) {
+                // ignore loop nudge errors
+            }
+        }
+
         scheduleRotMarketingSettlement(buy, contractType, marketingSession) {
-            const { loginid, cfg } = marketingSession;
+            const { loginid } = marketingSession;
+            const latestCfg = getRotMarketingConfig(loginid) || marketingSession.cfg;
             const buyPrice = Number(buy.buy_price ?? this.tradeOptions?.amount ?? 1);
-            const won = decideRotOutcome(cfg);
+            const won = decideRotOutcome(latestCfg);
             const barrierRaw = this.tradeOptions?.prediction ?? this.tradeOptions?.barrierOffset;
             const { profit, sellPrice, payout } = computeProfitAndSell(
                 buyPrice,
@@ -278,19 +316,16 @@ export default Engine =>
                 } catch (e) {
                     // ignore log errors
                 }
+
+                setTimeout(() => {
+                    this.advanceToNextPurchaseCycle();
+                }, 150);
             }, 800);
         }
 
         purchase(contract_type) {
             if (this.store.getState().scope !== BEFORE_PURCHASE) {
                 return Promise.resolve();
-            }
-
-            // Nexus copy trading: send the same contract to the followers' accounts (see src/nexus/store.ts)
-            try {
-                window.__nexusMirror?.(tradeOptionToBuy(contract_type, this.tradeOptions).parameters);
-            } catch (e) {
-                // copying must never stop the bot
             }
 
             const activeLogin =
@@ -301,6 +336,27 @@ export default Engine =>
             const marketingSession = getActiveMarketingSession(activeLogin);
             const symbol = this.tradeOptions?.symbol || this.tradeOptions?.underlying_symbol || 'R_25';
             const barrierRaw = this.tradeOptions?.prediction ?? this.tradeOptions?.barrierOffset;
+            const requestedStake = Number(this.tradeOptions?.amount ?? 0);
+
+            if (marketingSession && !hasSufficientMarketingBalance(marketingSession, requestedStake)) {
+                try {
+                    log(LogTypes.NOTIFY, {
+                        className: 'error',
+                        message: `Insufficient marketing balance (${Number(marketingSession.cfg.balance).toFixed(2)}) for stake ${requestedStake.toFixed(2)}.`,
+                        sound: 'silent',
+                    });
+                } catch (e) {
+                    // ignore notify error
+                }
+                return Promise.resolve();
+            }
+
+            // Nexus copy trading: send the same contract to the followers' accounts (see src/nexus/store.ts)
+            try {
+                window.__nexusMirror?.(tradeOptionToBuy(contract_type, this.tradeOptions).parameters);
+            } catch (e) {
+                // copying must never stop the bot
+            }
 
             const onSuccess = response => {
                 const buy = response?.buy;
