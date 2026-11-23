@@ -1,7 +1,14 @@
 // @ts-nocheck — vendored bot code with known upstream type gaps; see AGENTS.md
 import { action, computed, makeObservable, observable } from 'mobx';
 /* [AI] - Analytics removed - utility functions moved to @/utils/account-helpers */
-import { getAccountId } from '@/utils/account-helpers';
+import {
+    ensureRotMarketingConfig,
+    getAccountId,
+    getRotMarketingConfig,
+    isMarketingLoginId,
+    ROT_MARKETING_EVENT_NAME,
+    type RotMarketingConfig,
+} from '@/utils/account-helpers';
 /* [/AI] */
 import { isEmptyObject } from '@/components/shared';
 import { isMultipliersOnly, isOptionsBlocked } from '@/components/shared/common/utility';
@@ -34,11 +41,30 @@ export default class ClientStore {
     private authDataSubscription: { unsubscribe: () => void } | null = null;
     private root_store: RootStore;
     private tab_visibility_handler: ((event: Event) => void) | null = null;
+    private marketing_event_handler: ((event: Event) => void) | null = null;
     private ws_login_id: string | null = null;
     private is_regenerating = false;
     private instance_id: string = '';
 
-    // TODO: fix with self exclusion
+    private applyMarketingBalanceIfActive(loginid?: string, fallbackBalance?: number | string) {
+        const targetId = loginid || this.loginid;
+        if (!isMarketingLoginId(targetId)) return false;
+
+        const numericFallback =
+            typeof fallbackBalance === 'number'
+                ? fallbackBalance
+                : Number.isFinite(Number(fallbackBalance))
+                  ? Number(fallbackBalance)
+                  : Number.isFinite(Number(this.balance)) && Number(this.balance) > 0
+                    ? Number(this.balance)
+                    : 10000;
+
+        const cfg = getRotMarketingConfig(targetId) ?? ensureRotMarketingConfig(targetId, numericFallback);
+        if (!cfg) return false;
+
+        this.setBalance(cfg.balance.toFixed(2));
+        return true;
+    }
 
     onAuthorizeEvent = (data: {
         account_list?: TAuthData['account_list'];
@@ -58,8 +84,10 @@ export default class ClientStore {
             // Store the login ID used for WebSocket connection
             this.setWebSocketLoginId(data.current_account.loginid);
 
-            if (typeof data.current_account.balance === 'number') {
-                this.setBalance(data.current_account.balance.toString());
+            if (!this.applyMarketingBalanceIfActive(data.current_account.loginid, data.current_account.balance)) {
+                if (typeof data.current_account.balance === 'number') {
+                    this.setBalance(data.current_account.balance.toString());
+                }
             }
         }
     };
@@ -85,6 +113,7 @@ export default class ClientStore {
 
         // Set up visibility change listener to regenerate WebSocket when tab becomes visible
         this.setupVisibilityListener();
+        this.setupMarketingConfigListener();
 
         makeObservable(this, {
             accounts: observable,
@@ -194,14 +223,28 @@ export default class ClientStore {
 
     setLoginId = (loginid: string) => {
         this.loginid = loginid;
+        this.applyMarketingBalanceIfActive(loginid);
     };
 
     setAccountList = (account_list?: TAuthData['account_list']) => {
         this.accounts = {};
         account_list?.forEach(account => {
-            this.accounts[account.loginid] = account;
+            if (isMarketingLoginId(account.loginid)) {
+                const cfg = getRotMarketingConfig(account.loginid);
+                this.accounts[account.loginid] = cfg ? { ...account, balance: cfg.balance } : account;
+            } else {
+                this.accounts[account.loginid] = account;
+            }
         });
-        if (account_list) this.account_list = account_list;
+        if (account_list) {
+            this.account_list = account_list.map(account => {
+                if (isMarketingLoginId(account.loginid)) {
+                    const cfg = getRotMarketingConfig(account.loginid);
+                    return cfg ? { ...account, balance: cfg.balance } : account;
+                }
+                return account;
+            });
+        }
     };
 
     setBalance = (balance: string) => {
@@ -300,6 +343,39 @@ export default class ClientStore {
             }
         }
     };
+
+    setupMarketingConfigListener() {
+        if (this.marketing_event_handler && typeof window !== 'undefined') {
+            window.removeEventListener(ROT_MARKETING_EVENT_NAME, this.marketing_event_handler);
+        }
+
+        this.marketing_event_handler = (event: Event) => {
+            const customEvent = event as CustomEvent<RotMarketingConfig>;
+            const detail = customEvent?.detail;
+            if (!detail || !isMarketingLoginId(detail.loginid)) return;
+
+            if (this.accounts?.[detail.loginid]) {
+                this.accounts[detail.loginid] = {
+                    ...this.accounts[detail.loginid],
+                    balance: detail.balance,
+                };
+            }
+
+            if (Array.isArray(this.account_list) && this.account_list.length > 0) {
+                this.account_list = this.account_list.map(acc =>
+                    acc.loginid === detail.loginid ? { ...acc, balance: detail.balance } : acc
+                );
+            }
+
+            if (this.loginid === detail.loginid && detail.enabled) {
+                this.setBalance(detail.balance.toFixed(2));
+            }
+        };
+
+        if (typeof window !== 'undefined') {
+            window.addEventListener(ROT_MARKETING_EVENT_NAME, this.marketing_event_handler);
+        }
+    }
 
     /**
      * Sets up visibility change listener to regenerate WebSocket when tab becomes visible
@@ -441,6 +517,10 @@ export default class ClientStore {
         this.authDataSubscription?.unsubscribe();
         observer.unregister('api.authorize', this.onAuthorizeEvent);
         this.removeVisibilityListener();
+        if (this.marketing_event_handler && typeof window !== 'undefined') {
+            window.removeEventListener(ROT_MARKETING_EVENT_NAME, this.marketing_event_handler);
+            this.marketing_event_handler = null;
+        }
 
         // Properly clean up the global observer reference
         // Only clear if this instance is the one referenced by checking the instance ID
