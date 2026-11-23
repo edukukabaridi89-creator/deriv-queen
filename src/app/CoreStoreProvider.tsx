@@ -9,6 +9,7 @@ import { useApiBase } from '@/hooks/useApiBase';
 import { useLogout } from '@/hooks/useLogout';
 import { useStore } from '@/hooks/useStore';
 import { TSocketResponseData } from '@/types/api-types';
+import { getRotMarketingConfig, isMarketingLoginId } from '@/utils/account-helpers';
 import { clearInvalidTokenParams } from '@/utils/url-utils';
 import { useTranslations } from '@deriv-com/translations';
 
@@ -136,7 +137,15 @@ const CoreStoreProvider: React.FC<{ children: React.ReactNode }> = observer(({ c
 
             if (msg_type === 'balance' && data && !error) {
                 const balance = data.balance;
-                if (balance && typeof balance.balance === 'number') {
+                const msgLoginId = balance?.loginid || activeLoginid || client?.loginid;
+                const marketingCfg = isMarketingLoginId(msgLoginId) ? getRotMarketingConfig(msgLoginId) : null;
+
+                if (marketingCfg) {
+                    client.setBalance(marketingCfg.balance.toFixed(2));
+                    if (balance?.currency) {
+                        client.setCurrency(balance.currency);
+                    }
+                } else if (balance && typeof balance.balance === 'number') {
                     client.setBalance(balance.balance.toString());
 
                     if (balance.currency) {
@@ -147,7 +156,7 @@ const CoreStoreProvider: React.FC<{ children: React.ReactNode }> = observer(({ c
         },
         // Fixed memory leak: removed handleLogout from deps as it's not used in function body
         // Only client is actually referenced (line 129), preventing unnecessary re-subscriptions
-        [client]
+        [client, activeLoginid]
     );
 
     useEffect(() => {
