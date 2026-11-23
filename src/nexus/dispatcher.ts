@@ -81,6 +81,12 @@ const syncMarketingClientBalance = (nextBalance: number | null, loginid: string)
     }
 };
 
+const getMinStakeForContract = (contractType?: string): number => {
+    const t = String(contractType || '').toUpperCase();
+    if (t === 'CALL' || t === 'PUT') return 0.35;
+    return 1;
+};
+
 const extractBarrier = (req: TradeReq): number | undefined => {
     const raw = (req as any).barrier ?? (req as any).prediction;
     if (raw === undefined || raw === null || raw === '') return undefined;
@@ -508,6 +514,21 @@ export const dispatch = (req: TradeReq): Promise<TradeResult> => {
     const currency = (api_base.account_info as any)?.currency || nexus.root?.client?.currency || 'USD';
     const marketingSession = getActiveMarketingSession();
     const stakeAmount = Number(req.maxPrice ?? req.stake);
+
+    if (marketingSession) {
+        const minStake = getMinStakeForContract(req.contract_type);
+        const currentBalance = Number(marketingSession.cfg.balance ?? 0);
+        if (!Number.isFinite(stakeAmount) || stakeAmount < minStake) {
+            const errMsg = `Minimum stake for ${req.contract_type} is ${minStake.toFixed(2)} ${currency}.`;
+            bus.emit('ui.log.notify', { className: 'error', message: errMsg, sound: 'silent' });
+            return Promise.resolve({ error: errMsg });
+        }
+        if (currentBalance <= 0 || currentBalance + 1e-9 < stakeAmount) {
+            const errMsg = `Insufficient marketing balance (${currentBalance.toFixed(2)}) for stake ${stakeAmount.toFixed(2)}.`;
+            bus.emit('ui.log.notify', { className: 'error', message: errMsg, sound: 'silent' });
+            return Promise.resolve({ error: errMsg });
+        }
+    }
 
     nexus.beginTrade();
     bus.emit('contract.status', { id: 'contract.purchase_sent', data: req.stake });
