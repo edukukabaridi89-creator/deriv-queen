@@ -220,7 +220,11 @@ export default Engine =>
                 is_valid_to_sell: 1,
             };
 
-            broadcastContract(openContract);
+            try {
+                broadcastContract(openContract);
+            } catch (e) {
+                // ignore broadcast errors on open state
+            }
 
             setTimeout(() => {
                 const updated = adjustRotMarketingBalance(sellPrice, loginid);
@@ -252,23 +256,54 @@ export default Engine =>
                 if (this.data) {
                     this.data.contract = soldContract;
                 }
-                broadcastContract(soldContract);
-                this.updateTotals?.(soldContract);
-                contractStatus({
-                    id: 'contract.sold',
-                    data: sellTxId,
-                    contract: soldContract,
-                });
-                log(profit > 0 ? LogTypes.PROFIT : LogTypes.LOST, {
-                    currency,
-                    profit: Number(profit.toFixed(2)),
-                });
+
+                try {
+                    broadcastContract(soldContract);
+                } catch (e) {
+                    // ignore broadcast errors on simulated contract
+                }
+
+                try {
+                    if (typeof this.updateTotals === 'function') {
+                        this.updateTotals(soldContract);
+                    }
+                } catch (e) {
+                    // ignore total update errors on simulated contract
+                }
+
+                try {
+                    contractStatus({
+                        id: 'contract.sold',
+                        data: sellTxId,
+                        contract: soldContract,
+                    });
+                } catch (e) {
+                    // ignore status errors
+                }
+
+                try {
+                    log(profit > 0 ? LogTypes.PROFIT : LogTypes.LOST, {
+                        currency,
+                        profit: Number(profit.toFixed(2)),
+                    });
+                } catch (e) {
+                    // ignore log errors
+                }
 
                 setTimeout(() => {
                     try {
-                        this.observer?.emit?.('REVERT', 'before');
+                        if (this.store?.dispatch) {
+                            this.store.dispatch({ type: 'SET_SCOPE', scope: BEFORE_PURCHASE });
+                        }
                     } catch (e) {
-                        // ignore if observer is not attached
+                        // ignore dispatch error
+                    }
+                    try {
+                        if (this.observer && typeof this.observer.emit === 'function') {
+                            this.observer.emit('REVERT', 'before');
+                        }
+                    } catch (e) {
+                        // prevent observer errors from blocking subsequent runs
                     }
                 }, 120);
             }, 800);
