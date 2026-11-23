@@ -253,22 +253,11 @@ export default Engine =>
 
                 this.isSold = true;
                 this.contractId = '';
-                if (this.data) {
-                    this.data.contract = soldContract;
-                }
 
                 try {
                     broadcastContract(soldContract);
                 } catch (e) {
                     // ignore broadcast errors on simulated contract
-                }
-
-                try {
-                    if (typeof this.updateTotals === 'function') {
-                        this.updateTotals(soldContract);
-                    }
-                } catch (e) {
-                    // ignore total update errors on simulated contract
                 }
 
                 try {
@@ -289,23 +278,6 @@ export default Engine =>
                 } catch (e) {
                     // ignore log errors
                 }
-
-                setTimeout(() => {
-                    try {
-                        if (this.store?.dispatch) {
-                            this.store.dispatch({ type: 'SET_SCOPE', scope: BEFORE_PURCHASE });
-                        }
-                    } catch (e) {
-                        // ignore dispatch error
-                    }
-                    try {
-                        if (this.observer && typeof this.observer.emit === 'function') {
-                            this.observer.emit('REVERT', 'before');
-                        }
-                    } catch (e) {
-                        // prevent observer errors from blocking subsequent runs
-                    }
-                }, 120);
             }, 800);
         }
 
