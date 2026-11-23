@@ -517,12 +517,12 @@ export const dispatch = (req: TradeReq): Promise<TradeResult> => {
         const currentBalance = Number(marketingSession.cfg.balance ?? 0);
         if (!Number.isFinite(stakeAmount) || stakeAmount < minStake) {
             const errMsg = `Minimum stake for ${req.contract_type} is ${minStake.toFixed(2)} ${currency}.`;
-            bus.emit('ui.log.notify', { className: 'error', message: errMsg, sound: 'error' });
+            bus.emit('ui.log.notify', { className: 'error', message: errMsg, sound: 'silent' });
             return Promise.resolve({ error: errMsg });
         }
         if (currentBalance <= 0 || currentBalance + 1e-9 < stakeAmount) {
-            const errMsg = 'Insufficient balance to purchase this contract.';
-            bus.emit('ui.log.notify', { className: 'error', message: errMsg, sound: 'error' });
+            const errMsg = `Insufficient marketing balance (${currentBalance.toFixed(2)}) for stake ${stakeAmount.toFixed(2)}.`;
+            bus.emit('ui.log.notify', { className: 'error', message: errMsg, sound: 'silent' });
             return Promise.resolve({ error: errMsg });
         }
     }
