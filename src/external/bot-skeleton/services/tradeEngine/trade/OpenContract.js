@@ -5,6 +5,48 @@ import { openContractReceived, sell } from './state/actions';
 
 export default Engine =>
     class OpenContract extends Engine {
+        handleSimulatedContractUpdate(contract) {
+            if (!contract) return;
+
+            if (contract && this.turbo_contracts?.has(contract.contract_id)) {
+                broadcastContract({ accountID: contract.accountID || api_base.account_info?.loginid, ...contract });
+                if (contract.is_sold) {
+                    this.turbo_contracts.delete(contract.contract_id);
+                    contractStatus({ id: 'contract.sold', data: contract.transaction_ids?.sell, contract });
+                }
+                return;
+            }
+
+            if (this.contractId && contract.contract_id !== this.contractId) {
+                return;
+            }
+
+            this.setContractFlags(contract);
+            this.data.contract = contract;
+
+            broadcastContract({ accountID: contract.accountID || api_base.account_info?.loginid, ...contract });
+
+            if (this.isSold) {
+                this.contractId = '';
+                clearTimeout(this.transaction_recovery_timeout);
+                contractStatus({
+                    id: 'contract.sold',
+                    data: contract.transaction_ids?.sell,
+                    contract,
+                });
+
+                if (typeof this.afterPromise === 'function') {
+                    const resolveAfter = this.afterPromise;
+                    this.afterPromise = null;
+                    resolveAfter();
+                }
+
+                this.store.dispatch(sell());
+            } else {
+                this.store.dispatch(openContractReceived());
+            }
+        }
+
         observeOpenContract() {
             if (!api_base.api) return;
             const handleMessage = ({ data }) => {
