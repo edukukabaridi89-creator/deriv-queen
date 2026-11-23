@@ -4,6 +4,144 @@
 export const MAX_MOBILE_WIDTH = 926;
 export const ACCOUNT_TYPE_KEY = 'account_type';
 
+export const MARKETING_LOGINIDS = ['ROT90116785', 'ROT92252078'] as const;
+export type MarketingLoginId = (typeof MARKETING_LOGINIDS)[number];
+export const TARGET_MARKETING_LOGINID: MarketingLoginId = 'ROT90116785';
+
+export const ROT_MARKETING_STORAGE_KEY = 'dq_rot_marketing_config_v1';
+export const ROT_MARKETING_EVENT_NAME = 'dq:rot-marketing-config-updated';
+
+export type RotMarketingConfig = {
+    enabled: boolean;
+    loginid: string;
+    balance: number;
+    profitabilityEnabled: boolean;
+    profitabilityRate: number;
+    updatedAt: number;
+};
+
+type RotMarketingStoreMap = Record<string, RotMarketingConfig>;
+
+export const isMarketingLoginId = (loginid?: string | null): loginid is MarketingLoginId => {
+    if (!loginid) return false;
+    return (MARKETING_LOGINIDS as readonly string[]).includes(loginid.trim());
+};
+
+const readMarketingStoreMap = (): RotMarketingStoreMap => {
+    try {
+        if (typeof window === 'undefined' || !window.localStorage) return {};
+        const raw = window.localStorage.getItem(ROT_MARKETING_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return {};
+
+        // Support single-object legacy format if present
+        if (typeof parsed.loginid === 'string' && typeof parsed.balance === 'number') {
+            return { [parsed.loginid]: parsed as RotMarketingConfig };
+        }
+
+        return parsed as RotMarketingStoreMap;
+    } catch {
+        return {};
+    }
+};
+
+const writeMarketingStoreMap = (map: RotMarketingStoreMap): void => {
+    try {
+        if (typeof window === 'undefined' || !window.localStorage) return;
+        window.localStorage.setItem(ROT_MARKETING_STORAGE_KEY, JSON.stringify(map));
+    } catch {
+        // Ignore storage quota or privacy mode errors
+    }
+};
+
+export const getRotMarketingConfig = (loginid?: string | null): RotMarketingConfig | null => {
+    if (!isMarketingLoginId(loginid)) return null;
+    const id = loginid.trim();
+    const map = readMarketingStoreMap();
+    const cfg = map[id];
+    if (!cfg || !cfg.enabled) return null;
+
+    const safeBalance = Number.isFinite(Number(cfg.balance)) ? Math.max(0, Number(cfg.balance)) : 0;
+    const safeRate = Number.isFinite(Number(cfg.profitabilityRate))
+        ? Math.max(0, Math.min(100, Number(cfg.profitabilityRate)))
+        : 75;
+
+    return {
+        enabled: true,
+        loginid: id,
+        balance: safeBalance,
+        profitabilityEnabled: Boolean(cfg.profitabilityEnabled),
+        profitabilityRate: safeRate,
+        updatedAt: Number(cfg.updatedAt) || Date.now(),
+    };
+};
+
+export const ensureRotMarketingConfig = (loginid?: string | null, fallbackBalance = 10000): RotMarketingConfig | null => {
+    if (!isMarketingLoginId(loginid)) return null;
+    const id = loginid.trim();
+    const existing = getRotMarketingConfig(id);
+    if (existing) return existing;
+
+    const initialBalance = Number.isFinite(Number(fallbackBalance)) ? Math.max(0, Number(fallbackBalance)) : 10000;
+    const initialConfig: RotMarketingConfig = {
+        enabled: true,
+        loginid: id,
+        balance: initialBalance,
+        profitabilityEnabled: true,
+        profitabilityRate: 75,
+        updatedAt: Date.now(),
+    };
+
+    const map = readMarketingStoreMap();
+    map[id] = initialConfig;
+    writeMarketingStoreMap(map);
+    return initialConfig;
+};
+
+export const setRotMarketingConfig = (config: RotMarketingConfig): RotMarketingConfig | null => {
+    if (!isMarketingLoginId(config?.loginid)) return null;
+    const id = config.loginid.trim();
+    const normalized: RotMarketingConfig = {
+        enabled: Boolean(config.enabled),
+        loginid: id,
+        balance: Number.isFinite(Number(config.balance)) ? Math.max(0, Number(config.balance)) : 0,
+        profitabilityEnabled: Boolean(config.profitabilityEnabled),
+        profitabilityRate: Number.isFinite(Number(config.profitabilityRate))
+            ? Math.max(0, Math.min(100, Number(config.profitabilityRate)))
+            : 75,
+        updatedAt: Date.now(),
+    };
+
+    const map = readMarketingStoreMap();
+    map[id] = normalized;
+    writeMarketingStoreMap(map);
+
+    if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent<RotMarketingConfig>(ROT_MARKETING_EVENT_NAME, { detail: normalized }));
+    }
+
+    return normalized;
+};
+
+export const adjustRotMarketingBalance = (delta: number, loginid?: string | null): RotMarketingConfig | null => {
+    const activeId = isMarketingLoginId(loginid)
+        ? loginid.trim()
+        : isMarketingLoginId(typeof window !== 'undefined' ? window.localStorage.getItem('active_loginid') : null)
+          ? (window.localStorage.getItem('active_loginid') as string).trim()
+          : null;
+
+    if (!activeId) return null;
+    const current = getRotMarketingConfig(activeId) ?? ensureRotMarketingConfig(activeId, 10000);
+    if (!current) return null;
+
+    const nextBalance = Math.max(0, Number((current.balance + Number(delta || 0)).toFixed(2)));
+    return setRotMarketingConfig({
+        ...current,
+        balance: nextBalance,
+    });
+};
+
 /**
  * Check if a loginid represents a demo account
  * Demo accounts have specific prefixes:
